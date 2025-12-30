@@ -20,7 +20,7 @@
     "load-testing",
     "performance-testing"
   ],
-  "author": "",
+  "author": "aravindksk7",
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
