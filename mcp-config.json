@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "jmeter-architect": {
+      "command": "node",
+      "args": [
+        "C:\\jmeter-mcp\\dist\\index.js"
+      ],
+      "env": {
+        "PATH": "%PATH%"
+      },
+      "description": "JMeter Architect: Capable of constructing .jmx test plans via XML builder and executing them safely.",
+      "disabled": false,
+      "alwaysAllow": [
+        "jmeter_init_plan",
+        "jmeter_add_thread_group",
+        "jmeter_add_sampler",
+        "jmeter_add_header",
+        "jmeter_add_listener",
+        "jmeter_add_timer",
+        "jmeter_add_assertion",
+        "jmeter_run_test"
+      ]
+    }
+  }
+}
