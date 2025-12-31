@@ -39,70 +39,59 @@ export class JmxBuilder {
     }
 
     /**
-     * Gets the hashTree array that sits under TestPlan (where ThreadGroups go)
-     * This is jmeterTestPlan > hashTree[0] > hashTree
+     * Gets the single hashTree object that is sibling to TestPlan.
+     * This is where ThreadGroups and their hashTrees go.
+     * Structure: jmeterTestPlan.hashTree[0].hashTree[0] = { ThreadGroup: [...], hashTree: [...] }
      */
-    private getTestPlanChildHashTree(): any[] {
+    private getTestPlanChildHashTree(): any {
         const rootHashTree = this.jmxStructure.jmeterTestPlan.hashTree[0];
         
-        // The hashTree element after TestPlan - can be array or single item
+        // Ensure hashTree array exists
         if (!rootHashTree.hashTree) {
-            rootHashTree.hashTree = [''];
+            rootHashTree.hashTree = [{}];
         }
         
-        // xml2js stores multiple hashTree as array items
-        // We need the first one (which is the sibling of TestPlan)
-        let testPlanHashTree = rootHashTree.hashTree;
-        if (!Array.isArray(testPlanHashTree)) {
-            rootHashTree.hashTree = [testPlanHashTree];
-            testPlanHashTree = rootHashTree.hashTree;
+        // Ensure it's an array
+        if (!Array.isArray(rootHashTree.hashTree)) {
+            rootHashTree.hashTree = [rootHashTree.hashTree];
         }
         
-        return testPlanHashTree;
+        // Ensure first item is an object (not empty string)
+        if (!rootHashTree.hashTree[0] || typeof rootHashTree.hashTree[0] === 'string') {
+            rootHashTree.hashTree[0] = {};
+        }
+        
+        return rootHashTree.hashTree[0];
     }
 
     /**
-     * Find the container object that holds children of the last ThreadGroup.
-     * In xml2js, children are stored as properties of an object:
-     * { HeaderManager: [...], HTTPSamplerProxy: [...], hashTree: ['', '', ...] }
-     * Returns the object where child elements should be added as properties.
+     * Gets the single hashTree object that holds children of the ThreadGroup.
+     * Structure: testPlanHashTree.hashTree[0] = { HTTPSamplerProxy: [...], hashTree: [...] }
      */
     private getThreadGroupChildContainer(): any | null {
         const testPlanHashTree = this.getTestPlanChildHashTree();
         
-        // Find the last ThreadGroup
-        for (let i = testPlanHashTree.length - 1; i >= 0; i--) {
-            const item = testPlanHashTree[i];
-            
-            if (item && typeof item === 'object' && !Array.isArray(item) && item.ThreadGroup) {
-                // Found ThreadGroup, its children container should be at i+1
-                if (i + 1 < testPlanHashTree.length) {
-                    let childContainer = testPlanHashTree[i + 1];
-                    
-                    // If it's empty string (empty hashTree) or array, convert to object
-                    if (typeof childContainer === 'string' || !childContainer || Array.isArray(childContainer)) {
-                        // Start with empty hashTree array that will grow as we add elements
-                        testPlanHashTree[i + 1] = { hashTree: [] };
-                        childContainer = testPlanHashTree[i + 1];
-                    }
-                    
-                    // Ensure it has hashTree property as array
-                    if (!childContainer.hashTree) {
-                        childContainer.hashTree = [];
-                    } else if (!Array.isArray(childContainer.hashTree)) {
-                        childContainer.hashTree = [childContainer.hashTree];
-                    }
-                    
-                    return childContainer;
-                }
-                
-                // No entry after ThreadGroup, add one
-                testPlanHashTree.push({ hashTree: [] });
-                return testPlanHashTree[testPlanHashTree.length - 1];
-            }
+        // Check if ThreadGroup exists
+        if (!testPlanHashTree.ThreadGroup) {
+            return null;
         }
         
-        return null;
+        // Ensure hashTree array exists for ThreadGroup's children
+        if (!testPlanHashTree.hashTree) {
+            testPlanHashTree.hashTree = [{}];
+        }
+        
+        // Ensure it's an array
+        if (!Array.isArray(testPlanHashTree.hashTree)) {
+            testPlanHashTree.hashTree = [testPlanHashTree.hashTree];
+        }
+        
+        // Ensure first item is an object
+        if (!testPlanHashTree.hashTree[0] || typeof testPlanHashTree.hashTree[0] === 'string') {
+            testPlanHashTree.hashTree[0] = {};
+        }
+        
+        return testPlanHashTree.hashTree[0];
     }
 
     addThreadGroup(threads: number, rampup: number, loop: number) {
@@ -134,16 +123,11 @@ export class JmxBuilder {
 
         const testPlanHashTree = this.getTestPlanChildHashTree();
         
-        // Clean up empty placeholder
-        if (testPlanHashTree.length === 1 && testPlanHashTree[0] === '') {
-            testPlanHashTree.length = 0;
-        }
-
-        // Add ThreadGroup
-        testPlanHashTree.push({ ThreadGroup: [threadGroup] });
-        // Add object placeholder for ThreadGroup's children
-        // Children will be added as properties: { Element1: [...], Element2: [...], hashTree: ['', '', ...] }
-        testPlanHashTree.push({ hashTree: [] });
+        // Add ThreadGroup to the testPlanHashTree object
+        testPlanHashTree.ThreadGroup = [threadGroup];
+        
+        // Initialize hashTree for ThreadGroup's children (will contain child elements)
+        testPlanHashTree.hashTree = [{}];
     }
 
     private addChildElement(elementKey: string, elementValue: any): void {
@@ -159,8 +143,12 @@ export class JmxBuilder {
             container[elementKey].push(elementValue);
         }
         
-        // Add empty hashTree entry for this element
-        container.hashTree.push('');
+        // Add empty hashTree entry for this element's children
+        if (!container.hashTree) {
+            container.hashTree = [''];
+        } else if (Array.isArray(container.hashTree)) {
+            container.hashTree.push('');
+        }
     }
 
     addHttpSampler(domain: string, urlPath: string, method: string, params: Record<string, string>) {
@@ -376,9 +364,159 @@ export class JmxBuilder {
         this.addChildElement('ResponseAssertion', assertion);
     }
 
+    /**
+     * Build XML with proper element/hashTree interleaving.
+     * JMeter requires: Element1, hashTree1, Element2, hashTree2, ...
+     */
+    private buildInterleavedXml(container: any, indent: string = ''): string {
+        let xml = '';
+        const childIndent = indent + '  ';
+        
+        // Collect all element types except 'hashTree' and '$'
+        const elementTypes = Object.keys(container).filter(k => k !== 'hashTree' && k !== '$');
+        const hashTrees = container.hashTree || [];
+        
+        // Build interleaved output
+        let hashTreeIndex = 0;
+        for (const elementType of elementTypes) {
+            const elements = container[elementType];
+            if (Array.isArray(elements)) {
+                for (const element of elements) {
+                    // Build element XML
+                    xml += this.buildElementXml(elementType, element, childIndent);
+                    
+                    // Add corresponding hashTree
+                    if (hashTreeIndex < hashTrees.length) {
+                        const ht = hashTrees[hashTreeIndex];
+                        if (ht && typeof ht === 'object' && Object.keys(ht).length > 0) {
+                            xml += `${childIndent}<hashTree>\n`;
+                            xml += this.buildInterleavedXml(ht, childIndent);
+                            xml += `${childIndent}</hashTree>\n`;
+                        } else {
+                            xml += `${childIndent}<hashTree/>\n`;
+                        }
+                        hashTreeIndex++;
+                    } else {
+                        xml += `${childIndent}<hashTree/>\n`;
+                    }
+                }
+            }
+        }
+        
+        return xml;
+    }
+
+    /**
+     * Build XML for a single element with its attributes and children.
+     */
+    private buildElementXml(tagName: string, element: any, indent: string): string {
+        // Handle primitive values (strings, numbers, booleans)
+        if (element === null || element === undefined) {
+            return `${indent}<${tagName}/>\n`;
+        }
+        
+        if (typeof element !== 'object') {
+            // Element is a primitive value - wrap it directly
+            const value = String(element);
+            if (value === '') {
+                return `${indent}<${tagName}/>\n`;
+            }
+            return `${indent}<${tagName}>${this.escapeXml(value)}</${tagName}>\n`;
+        }
+        
+        let xml = `${indent}<${tagName}`;
+        
+        // Add attributes
+        if (element.$) {
+            for (const [attr, value] of Object.entries(element.$)) {
+                xml += ` ${attr}="${this.escapeXml(String(value))}"`;
+            }
+        }
+        
+        // Check for child elements
+        const childKeys = Object.keys(element).filter(k => k !== '$' && k !== '_');
+        const hasText = element._ !== undefined;
+        
+        if (childKeys.length === 0 && !hasText) {
+            xml += '/>\n';
+        } else {
+            xml += '>';
+            
+            if (hasText && childKeys.length === 0) {
+                xml += this.escapeXml(String(element._));
+                xml += `</${tagName}>\n`;
+            } else {
+                xml += '\n';
+                
+                // Build child elements
+                for (const childKey of childKeys) {
+                    const children = element[childKey];
+                    if (Array.isArray(children)) {
+                        for (const child of children) {
+                            xml += this.buildElementXml(childKey, child, indent + '  ');
+                        }
+                    }
+                }
+                
+                xml += `${indent}</${tagName}>\n`;
+            }
+        }
+        
+        return xml;
+    }
+
+    private escapeXml(str: string): string {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
     async save(filepath: string) {
         await fs.writeFile('debug.json', JSON.stringify(this.jmxStructure, null, 2));
-        const xml = this.xmlBuilder.buildObject(this.jmxStructure);
+        
+        // Build XML with proper interleaving
+        const root = this.jmxStructure.jmeterTestPlan;
+        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        xml += '<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.5">\n';
+        xml += '  <hashTree>\n';
+        
+        // Build TestPlan element
+        const testPlan = root.hashTree[0].TestPlan[0];
+        xml += this.buildElementXml('TestPlan', testPlan, '    ');
+        
+        // Build TestPlan's hashTree (contains ThreadGroup and its children)
+        const testPlanHashTree = root.hashTree[0].hashTree?.[0];
+        if (testPlanHashTree && typeof testPlanHashTree === 'object' && Object.keys(testPlanHashTree).length > 0) {
+            xml += '    <hashTree>\n';
+            
+            // Build ThreadGroup
+            if (testPlanHashTree.ThreadGroup) {
+                const threadGroup = testPlanHashTree.ThreadGroup[0];
+                xml += this.buildElementXml('ThreadGroup', threadGroup, '      ');
+                
+                // Build ThreadGroup's children hashTree
+                const threadGroupHashTree = testPlanHashTree.hashTree?.[0];
+                if (threadGroupHashTree && typeof threadGroupHashTree === 'object' && Object.keys(threadGroupHashTree).length > 0) {
+                    xml += '      <hashTree>\n';
+                    xml += this.buildInterleavedXml(threadGroupHashTree, '      ');
+                    xml += '      </hashTree>\n';
+                } else {
+                    xml += '      <hashTree/>\n';
+                }
+            }
+            
+            xml += '    </hashTree>\n';
+        } else {
+            xml += '    <hashTree/>\n';
+        }
+        
+        xml += '  </hashTree>\n';
+        xml += '</jmeterTestPlan>\n';
+        
         await fs.writeFile(filepath, xml);
     }
 }
+
